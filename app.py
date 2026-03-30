@@ -175,10 +175,25 @@ def load_ticker_universe():
 
 @st.cache_data(ttl=3600)
 def fetch_data(t: str, p: str = "max") -> pd.DataFrame:
-    df = yf.download(t, period=p, progress=False)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.droplevel(1)
-    return df
+    """주가 데이터를 가져온다. 실패 시 최대 2회 재시도한다.
+    auto_adjust=False: yfinance 버전에 따른 컬럼명 변화를 막기 위해 원본 OHLCV를 그대로 받는다."""
+    import time
+    for attempt in range(3):  # 최대 3회 시도
+        try:
+            df = yf.download(t, period=p, progress=False, auto_adjust=False)
+            if df is None or df.empty:
+                time.sleep(1)  # 잠시 대기 후 재시도
+                continue
+            # MultiIndex 컬럼 정리 (yfinance 최신 버전 호환)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.droplevel(1)
+            # Adj Close 컬럼이 있으면 제거 (혼선 방지)
+            if 'Adj Close' in df.columns:
+                df = df.drop(columns=['Adj Close'])
+            return df
+        except Exception:
+            time.sleep(1)
+    return pd.DataFrame()  # 3회 모두 실패 시 빈 DataFrame 반환
 
 
 @st.cache_data(ttl=300)  # 관심목록 배치 조회는 5분 캐시 (비교적 빠른 갱신)
@@ -227,8 +242,10 @@ with st.spinner("종목 데이터를 준비 중입니다..."):
     all_options, ticker_map, market_map, reverse_map = load_ticker_universe()
 
 if 'search_box' not in st.session_state:
-    default = "Apple Inc. (AAPL)"
-    st.session_state['search_box'] = default if default in all_options else all_options[0]
+    # 정확한 이름 대신 reverse_map(ticker→display)으로 AAPL을 찾아 기본값 설정
+    # FDR이 반환하는 회사명이 버전마다 달라질 수 있으므로 ticker로 역방향 탐색한다
+    default_aapl = reverse_map.get("AAPL")
+    st.session_state['search_box'] = default_aapl if default_aapl and default_aapl in all_options else all_options[0]
 if 'watchlist_data' not in st.session_state:
     st.session_state['watchlist_data'] = load_watchlist()
 # 메인 탭 전환을 위한 상태값 (0=차트, 1=관심목록)
